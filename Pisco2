@@ -203,9 +203,10 @@ class _SplashScreenState extends State<SplashScreen> {
             children: const [
               Icon(Icons.psychology, size: 100, color: Color(0xFFECEFF1)),
               SizedBox(height: 20),
-              // Título actualizado
+              // Título actualizado y centrado
               Text(
                 'Bienvenido a PsicoAmIgo Beta Testers',
+                textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.bold,
@@ -215,6 +216,7 @@ class _SplashScreenState extends State<SplashScreen> {
               SizedBox(height: 8),
               Text(
                 'Tu amigo para el bienestar emocional',
+                textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 16, color: Color(0xFF9CA2EF)),
               ),
               SizedBox(height: 30),
@@ -751,7 +753,7 @@ class _PsicoAmIgoAppState extends State<PsicoAmIgoApp> {
   }
 }
 
-// Pantalla principal con pestañas y lógica del Chatbot
+// Pantalla principal con lógica del Chatbot
 class HomeScreen extends StatefulWidget {
   final bool isDarkMode;
   final ValueChanged<bool> onThemeChanged;
@@ -765,9 +767,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver { // Agregado WidgetsBindingObserver
-  late TabController _tabController;
+    with WidgetsBindingObserver { // Agregado WidgetsBindingObserver
   final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController(); // Controlador de scroll
   bool _isLoading = false;
   List<ChatMessage> _messages = [];
   List<SavedChat> _savedChats = [];
@@ -776,7 +778,6 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
     _loadSavedChats();
     WidgetsBinding.instance.addObserver(this); // Registrar observer
   }
@@ -784,7 +785,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this); // Desregistrar observer
-    _tabController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
   
@@ -801,11 +802,23 @@ class _HomeScreenState extends State<HomeScreen>
   void _checkAndPromptSaveOnClose() {
     if (_isChatModified && _messages.isNotEmpty) {
       // Usamos Future.delayed para asegurar que el modal se muestre
-      // incluso si el widget está a punto de desaparecer.
       Future.delayed(Duration.zero, () {
         showSaveChatModal(context, _messages, _saveChat);
       });
     }
+  }
+  
+  // Función para desplazar el chat al final
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   // --- PERSISTENCIA DE CHATS ---
@@ -851,12 +864,13 @@ class _HomeScreenState extends State<HomeScreen>
       _isChatModified = false;
     });
     Navigator.of(context).pop(); // Cierra el Drawer
+    _scrollToBottom();
   }
 
   void _startNewChat() {
     if (_isChatModified) {
-       _showUnsavedChatWarning();
-       return;
+        _showUnsavedChatWarning();
+        return;
     }
     setState(() {
       _messages = [];
@@ -918,18 +932,36 @@ class _HomeScreenState extends State<HomeScreen>
       _controller.clear();
       return;
     }
+    
+    // 2. Detección de "Gracias" (Guardado de Chat)
+    if (lowerCaseMessage.trim() == 'gracias') {
+      _controller.clear();
+      if (_isChatModified && _messages.isNotEmpty) {
+        await showSaveChatModal(context, _messages, _saveChat);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No hay chat nuevo para guardar.')),
+        );
+      }
+      return;
+    }
 
     setState(() {
       _messages.add(ChatMessage(text: message, isUser: true));
       _isChatModified = true;
       _isLoading = true;
     });
+    _scrollToBottom();
 
-    // V A L O R   I M P O R T A N T E:
-    // **REEMPLAZA ESTA CLAVE PLACEHOLDER CON TU CLAVE REAL DE OPENROUTER**
-    // Si usas esta clave, el chatbot fallará.
+    // Límite de Historial para Contexto (Optimización)
+    // Conserva solo los últimos 10 mensajes (5 pares) para el contexto de la API.
+    final historyLength = _messages.length > 10 ? _messages.length - 10 : 0;
+    final contextMessages = _messages.sublist(historyLength);
+
+
+    // V A L O R   I M P O R T A N T E:
     const apiKey =
-        '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'; 
+        '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'; 
     const endpoint = 'https://openrouter.ai/api/v1/chat/completions';
     
     try {
@@ -947,13 +979,13 @@ class _HomeScreenState extends State<HomeScreen>
               'content':
                   'Eres un amigo terapeuta llamado PsicoAmIgo que brinda apoyo emocional y psicológico de manera empática y amable y en ningun momento te saldras de tu papel y ten en claro que no eres uno no buscas sustituir solo complementar.',
             },
-            ..._messages.map(
+            // Se envían solo los mensajes recientes para ahorrar costos y mejorar la velocidad.
+            ...contextMessages.map(
               (m) => {
                 'role': m.isUser ? 'user' : 'assistant',
                 'content': m.text,
               },
             ),
-            {'role': 'user', 'content': message},
           ],
         }),
       );
@@ -965,6 +997,7 @@ class _HomeScreenState extends State<HomeScreen>
             _messages.add(ChatMessage(text: reply, isUser: false));
             _isLoading = false;
           });
+          _scrollToBottom();
         } else {
           _handleApiError('Respuesta de IA vacía.');
         }
@@ -976,25 +1009,16 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     _controller.clear();
-    
-    // 2. Preguntar si desea guardar el chat al final de la conversación (solo si se modificó)
-    if (!_isLoading && _messages.length > 2) {
-      // Usamos Future.delayed para asegurar que el setState anterior termine
-      Future.delayed(Duration.zero, () {
-        if (_isChatModified) { // Solo preguntar si hay mensajes nuevos o cargados
-          showSaveChatModal(context, _messages, _saveChat);
-        }
-      });
-    }
   }
   
   void _handleApiError(String message) {
-     setState(() {
+      setState(() {
         _messages.add(
           ChatMessage(text: 'Lo siento, ocurrió un error: $message. Por favor, asegúrate de que tu clave API de OpenRouter es correcta.', isUser: false),
         );
         _isLoading = false;
       });
+      _scrollToBottom();
   }
 
   // --- WIDGETS DE UI ---
@@ -1059,11 +1083,66 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  Widget _buildChatContent() {
+    if (_messages.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.psychology_alt, size: 80, color: Theme.of(context).colorScheme.secondary),
+              const SizedBox(height: 16),
+              const Text(
+                'Hola, soy PsicoAmIgo. ¿Cómo te sientes hoy?',
+                textAlign: TextAlign.center, // Centrado de texto
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Escribe para iniciar una conversación.',
+                textAlign: TextAlign.center, // Centrado de texto
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: _scrollController, // Asignar controlador de scroll
+      padding: const EdgeInsets.all(16),
+      itemCount: _messages.length,
+      itemBuilder: (context, index) {
+        final message = _messages[index];
+        return Align(
+          alignment: message.isUser
+              ? Alignment.centerRight
+              : Alignment.centerLeft,
+          child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: message.isUser
+                  ? const Color(0xFF7178DF)
+                  : const Color(0xFF9CA2EF),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              message.text,
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('PsicoAmIgo - Beta Testers'),
+        title: const Text('PsicoAmIgo - Chat IA'),
         actions: [
           // Botón de Líneas de Emergencia (Teléfono)
           IconButton(
@@ -1092,95 +1171,45 @@ class _HomeScreenState extends State<HomeScreen>
         ],
       ),
       drawer: _buildChatDrawer(), // Menú lateral para chats guardados
-      body: TabBarView(
-        controller: _tabController,
+      body: Column(
         children: [
-          // 1. Chat IA (Contenido Principal)
-          Column(
-            children: [
-              Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final message = _messages[index];
-                    return Align(
-                      alignment: message.isUser
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 4),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: message.isUser
-                              ? const Color(0xFF7178DF)
-                              : const Color(0xFF9CA2EF),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          message.text,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              if (_isLoading)
-                const Padding(
-                  padding: EdgeInsets.all(8.0),
-                  child: CircularProgressIndicator(color: Color(0xFF3F448C)),
-                ),
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _controller,
-                        decoration: const InputDecoration(
-                          hintText: 'Escribe tu mensaje...',
-                          focusedBorder: OutlineInputBorder(
-                            borderSide: BorderSide(color: Color(0xFF5A61BD)),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderSide: BorderSide(color: Color(0xFF9CA2EF)),
-                          ),
-                        ),
-                        onSubmitted: sendMessage,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () => sendMessage(_controller.text),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF5A61BD),
-                        minimumSize: const Size(50, 48),
-                      ),
-                      child: const Icon(Icons.send),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+          Expanded(
+            child: _buildChatContent(),
           ),
-
-          // 2. Pulsera (Placeholder)
-          const Center(
-            child: Text(
-              'Funcionalidad de Pulsera (Próximamente)',
-              style: TextStyle(fontSize: 20),
+          if (_isLoading)
+            const Padding(
+              padding: EdgeInsets.all(8.0),
+              child: CircularProgressIndicator(color: Color(0xFF3F448C)),
             ),
-          ),
-
-          // 3. Tienda (Placeholder)
-          Center(
-            child: Text(
-              'Tienda en construcción',
-              style: TextStyle(
-                fontSize: 20,
-                color: widget.isDarkMode ? Colors.white : Colors.black,
-              ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    decoration: const InputDecoration(
+                      hintText: 'Escribe tu mensaje...',
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF5A61BD)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF9CA2EF)),
+                      ),
+                    ),
+                    onSubmitted: sendMessage,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () => sendMessage(_controller.text),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF5A61BD),
+                    minimumSize: const Size(50, 48),
+                  ),
+                  child: const Icon(Icons.send),
+                ),
+              ],
             ),
           ),
         ],
